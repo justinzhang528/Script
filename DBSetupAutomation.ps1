@@ -1,9 +1,18 @@
-$sourceServer = "wl-a5.tw01.ppanggu.com" # Need to change
+$sourceServer = "." # Need to change for migration
 $targetServer = "."
 $SQLServiceName = "MSSQLSERVER"
 $AgentServiceName = "SQLSERVERAGENT"
 $sourceConnectionString = "Server=$sourceServer;Database=master;Integrated Security=True;TrustServerCertificate=True;"
 $targetConnectionString = "Server=$targetServer;Database=master;Integrated Security=True;TrustServerCertificate=True;"
+
+$chooseOption = Read-Host "Input [1] for migration, otherwise input [2]"
+while($chooseOption -ne 1 -and $chooseOption -ne 2){
+    Write-Host "Invalid input. Please input again!"
+    $chooseOption = Read-Host "Input [1] for migration, otherwise input [2]"
+}
+if($chooseOption -eq 1){
+    $userInput = Read-Host "Source Server: $sourceServer.`nIf source server is wrong, press [Ctrl+C] to stop the program and change to correct one in script file.`nIf no problem then press [Enter] to continue"
+}
 
 # Modify SQL Server Agent & SQL Server Logon Account to [PPANGGU\crontab101]
 $NewLogonAccount = "PPANGGU\crontab101"
@@ -80,7 +89,7 @@ if (Test-Path $RegistryPath) {
 # ---------------------------------------------------------------------------------------------------------------- #
 
 # Set Sql server memory settings:
-$query = @"
+$query = "
 SELECT 
     name AS 'Setting',
     value AS 'Value'
@@ -88,14 +97,14 @@ FROM
     sys.configurations
 WHERE 
     name IN ('min server memory (MB)', 'max server memory (MB)')
-"@
+"
 
 $memorySettings = Invoke-Sqlcmd -ConnectionString $sourceConnectionString -Query $query
 
 $minServerMemory = ($memorySettings | Where-Object { $_.Setting -eq 'min server memory (MB)' }).Value
 $maxServerMemory = ($memorySettings | Where-Object { $_.Setting -eq 'max server memory (MB)' }).value
 
-$updateMemoryQuery = @"
+$updateMemoryQuery = "
 sp_configure 'show advanced options', 1;
 GO
 RECONFIGURE;
@@ -108,7 +117,23 @@ sp_configure 'max server memory', $maxServerMemory;
 GO
 RECONFIGURE;
 GO
-"@
+"
+
+if($chooseOption -eq 2){
+	$memory = Get-CimInstance -ClassName Win32_ComputerSystem
+	$totalMemoryMB = [math]::round($memory.TotalPhysicalMemory / 1MB, 2)
+	$maxServerMemory = [int][Math]::Floor(($totalMemoryMB * 0.85))
+	$updateMemoryQuery = "
+	sp_configure 'show advanced options', 1;
+	GO
+	RECONFIGURE;
+	GO
+	sp_configure 'max server memory', $maxServerMemory;
+	GO
+	RECONFIGURE;
+	GO
+	"
+}
 
 Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $updateMemoryQuery
 
@@ -203,6 +228,12 @@ Start-Service -Name $AgentServiceName
 
 Write-Host "SystemDB files moved to Disk D:."
 Write-Host "TempDB files moved to Disk I:."
+
+# ---------------------------------------------------------------------------------------------------------------- #
+
+if($chooseOption -eq 2){
+    return
+}
 
 # ---------------------------------------------------------------------------------------------------------------- #
 
