@@ -5,13 +5,19 @@ $AgentServiceName = "SQLSERVERAGENT"
 $sourceConnectionString = "Server=$sourceServer;Database=master;Integrated Security=True;TrustServerCertificate=True;"
 $targetConnectionString = "Server=$targetServer;Database=master;Integrated Security=True;TrustServerCertificate=True;"
 
+Write-Host "Please check the contents in https://olympian.atlassian.net/wiki/spaces/IT/pages/271155213/Setup+DB+Automation+Script before choosing the operation." -ForegroundColor Yellow
 $chooseOption = Read-Host "Input [1] for migration, otherwise input [2]"
 while($chooseOption -ne 1 -and $chooseOption -ne 2){
     Write-Host "Invalid input. Please input again!"
     $chooseOption = Read-Host "Input [1] for migration, otherwise input [2]"
 }
+
 if($chooseOption -eq 1){
-    $userInput = Read-Host "Source Server: $sourceServer.`nIf source server is wrong, press [Ctrl+C] to stop the program and change to correct one in script file.`nIf no problem then press [Enter] to continue"
+    Write-Host "Source Server: $sourceServer`nTarget Server: $targetServer" -ForegroundColor Yellow
+    Read-Host "If server info is wrong, press [Ctrl+C] to stop the program and change server in script file.`nIf correct then press [Enter] to continue"
+}else{
+    Write-Host "Target Server: $targetServer" -ForegroundColor Yellow
+    Read-Host "If server info is wrong, press [Ctrl+C] to stop the program and change server in script file.`nIf correct then press [Enter] to continue"
 }
 
 # Modify SQL Server Agent & SQL Server Logon Account to [PPANGGU\crontab101]
@@ -159,7 +165,7 @@ Write-Host "Login $loginName added to SQLAgentReaderRole in msdb."
 
 # ---------------------------------------------------------------------------------------------------------------- #
 
-# Move System file DB to Disk D & Temp DB to Disk I:
+# Move SystemDB files to Disk D & TempDB files to Disk I:
 New-Item -Path "D:\SystemDB" -ItemType Directory -Force | Out-Null
 New-Item -Path "G:\Data" -ItemType Directory -Force | Out-Null
 New-Item -Path "H:\Log" -ItemType Directory -Force | Out-Null
@@ -231,153 +237,9 @@ Write-Host "TempDB files moved to Disk I:."
 
 # ---------------------------------------------------------------------------------------------------------------- #
 
-if($chooseOption -eq 2){
-    return
-}
-
-# ---------------------------------------------------------------------------------------------------------------- #
-
-# Restore DB:
-$sqlQuery = @"
-SELECT NAME
-FROM sys.databases
-WHERE database_id > 4 
-and name not in ('BKTablesDB')
-AND is_read_only = 0
-"@
-
-$dbs = Invoke-Sqlcmd -ConnectionString $sourceConnectionString -Query $sqlQuery
-
-$sqlQuery = @"
-SELECT @@SERVERNAME AS HostName
-"@
-
-$sourceHostName = ((Invoke-Sqlcmd -ConnectionString $sourceConnectionString -Query $sqlQuery) | Select-Object -First 1).HostName
-
-$nasFolder = "\\10.26.8.243\CMWLDBbackup\$sourceHostName\"
-$tempFolder = "G:\tempDbRestore\"
-New-Item -Path $tempFolder -ItemType Directory -Force | Out-Null
-New-Item -Path "$nasFolder\tempDB\" -ItemType Directory -Force | Out-Null
-New-Item -Path "D:\Database\Data\" -ItemType Directory -Force | Out-Null
-New-Item -Path "D:\Database\Log\" -ItemType Directory -Force | Out-Null
-New-Item -Path "G:\Database\Data\" -ItemType Directory -Force | Out-Null
-New-Item -Path "G:\Database\Log\" -ItemType Directory -Force | Out-Null
-New-Item -Path "H:\Database\Data\" -ItemType Directory -Force | Out-Null
-New-Item -Path "H:\Database\Log\" -ItemType Directory -Force | Out-Null
-New-Item -Path "I:\Database\Data\" -ItemType Directory -Force | Out-Null
-New-Item -Path "I:\Database\Log\" -ItemType Directory -Force | Out-Null
-
-# Copy backup file to local machine
-for ($i = 0; $i -lt $dbs.Count; $i++) {
-    $isBackupFileExist = 0
-    $dates = Get-Childitem $nasFolder | Sort-Object -Descending
-    foreach($date in $dates){
-        $fullfile = Get-Childitem "$nasFolder\$date\DB_BACKUP_FULL" -Recurse |
-            Where-Object {$_.Extension -eq ".BAK" -and $_.Name -like "$($dbs[$i].NAME)*"} |
-            Sort-Object -Property LastWriteTime -Descending |
-            Select-Object -First 1
-        if ($fullfile){
-            Copy-Item -Path $fullfile.FullName -Destination "$tempFolder\$($dbs[$i].Name).BAK" -Force
-            Write-Host "Copy backup file for [$($dbs[$i].NAME)] done."
-            $isBackupFileExist = 1
-            break
-        }
-    }
-    
-    if(-not $isBackupFileExist){
-        Write-Host "Backup file for $($dbs[$i].NAME) doesn't exist."
-        continue
-    }
-
-    Write-Host "Restoring [$($dbs[$i].NAME)]..."
-    $sqlQuery = "
-    USE [master]
-    GO
-    RESTORE DATABASE [$($dbs[$i].NAME)] FROM DISK = N'$tempFolder\$($dbs[$i].Name).BAK' WITH FILE = 1, NOUNLOAD, REPLACE, STATS = 5
-    GO
-    "
-
-    Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-    Write-Host "Restore [$($dbs[$i].NAME)] done."
-}
-
-Remove-Item -Path $tempFolder -Recurse
-
-# ---------------------------------------------------------------------------------------------------------------- #
-
 # Copy \\10.26.8.76\d$\local-workspace\Scripts\DBA\SqlJobScripts\Backup to D:\Database\Script:
 New-Item -Path "D:\Database\Script\" -ItemType Directory -Force | Out-Null
 Copy-Item -Path "\\10.26.8.76\d$\local-workspace\Scripts\DBA\SqlJobScripts\Backup\*" -Destination "D:\Database\Script\" -Force
-
-# ---------------------------------------------------------------------------------------------------------------- #
-
-# Create Linked Server from old DB:
-# $sqlQuery = "
-# SELECT name, product, provider, data_source, location, provider_string, catalog FROM sys.servers WHERE is_linked = 1
-# "
-
-# $sourceLinkedServers = Invoke-Sqlcmd -ConnectionString $sourceConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-# foreach ($linkedServer in $sourceLinkedServers) {
-#     $createLinkedServerScript = @"
-# EXEC sp_addlinkedserver 
-#     @server = N'$($linkedServer.name)', 
-#     @srvproduct=N'$($linkedServer.product)', 
-#     @provider=N'$($linkedServer.provider)', 
-#     @datasrc=N'$($linkedServer.data_source)',
-#     @catalog=N'$($linkedServer.catalog)';
-# "@
-
-#     Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $createLinkedServerScript -Querytimeout ([int]::MaxValue)
-
-#     $copyLoginScript = "EXEC sp_addlinkedsrvlogin @rmtsrvname = N'$($linkedServer.name)', @useself = N'False', @locallogin = NULL, @rmtuser = N'CCWLCI', @rmtpassword = N'y9VhQ8L6d0a83ivt7aqQgw==';"
-    
-#     Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $copyLoginScript -Querytimeout ([int]::MaxValue)
-# }
-
-# Write-Host "Linked servers copied from $sourceInstance to $targetInstance."
-
-$linkedServerScript = [System.IO.File]::ReadAllText("G:\LinkedServer.sql")
-Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $linkedServerScript -Querytimeout ([int]::MaxValue)
-Remove-Item -Path "G:\LinkedServer.sql"
-
-# ---------------------------------------------------------------------------------------------------------------- #
-
-# Create SQL Agent Job from old DB:
-# $sqlAgentJobScript = [System.IO.File]::ReadAllText("G:\SQLAgentJob.sql")
-# Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlAgentJobScript -Querytimeout ([int]::MaxValue)
-# Remove-Item -Path "G:\SQLAgentJob.sql"
-
-# ---------------------------------------------------------------------------------------------------------------- #
-
-# Create Security Login from script file
-$sqlQuery = @"
-SELECT @@SERVERNAME AS HostName
-"@
-
-$sourceHostName = ((Invoke-Sqlcmd -ConnectionString $sourceConnectionString -Query $sqlQuery) | Select-Object -First 1).HostName
-$nasFolder = "\\10.26.8.243\CMWLDBbackup\$sourceHostName\"
-
-$isBackupFileExist = 0
-$dates = Get-Childitem $nasFolder | Sort-Object -Descending
-foreach($date in $dates){
-    $loginFile = Get-Childitem "$nasFolder\$date\DB_BACKUP_FULL" -Recurse |
-        Where-Object {$_.Extension -eq ".sql" -and $_.Name -like "login*"} |
-        Sort-Object -Property LastWriteTime -Descending |
-        Select-Object -First 1
-    if ($loginFile){
-        Copy-Item -Path $loginFile.FullName -Destination "G:\login.sql" -Force
-        $loginScript = [System.IO.File]::ReadAllText("G:\login.sql")
-        Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $loginScript -Querytimeout ([int]::MaxValue)
-        $isBackupFileExist = 1
-        break
-    }
-}
-
-if(-not $isBackupFileExist){
-    Write-Host "Login file doesn't exist."
-}
-
-Remove-Item -Path "G:\login.sql"
 
 # ---------------------------------------------------------------------------------------------------------------- #
 
@@ -5796,82 +5658,14 @@ GO
 
 Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
 
-# $sqlQuery = @"
-# USE [master] 
-# GO
-
-# CREATE LOGIN [opserverDBA] WITH PASSWORD=N'IIRVHMiFxZ5xbZ+HQ2H/dXKsBAGTYMrW', DEFAULT_DATABASE=[master], DEFAULT_LANGUAGE=[us_english], CHECK_EXPIRATION=OFF, CHECK_POLICY=OFF
-# GO
-
-# EXEC sys.sp_addsrvrolemember @loginame = N'opserverDBA', @rolename = N'processadmin'
-# GO
-# "@
-
-# Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-
 $sqlQuery = @"
-DECLARE @command varchar(4000)
-SELECT @command = 'USE [?]
-CREATE USER [opserverDBA] FOR LOGIN [opserverDBA]'
+USE [master] 
+GO
 
-EXEC sp_MSforeachdb @command
+CREATE LOGIN [opserverDBA] WITH PASSWORD=N'IIRVHMiFxZ5xbZ+HQ2H/dXKsBAGTYMrW', DEFAULT_DATABASE=[master], DEFAULT_LANGUAGE=[us_english], CHECK_EXPIRATION=OFF, CHECK_POLICY=OFF
 GO
-USE [msdb]
-GO
-ALTER ROLE [DatabaseMailUserRole] ADD MEMBER [opserverDBA]
-GO
-USE [msdb]
-GO
-ALTER ROLE [SQLAgentOperatorRole] ADD MEMBER [opserverDBA]
-GO
-USE [msdb]
-GO
-ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [opserverDBA]
-GO
-USE [msdb]
-GO
-ALTER ROLE [SQLAgentUserRole] ADD MEMBER [opserverDBA]
-GO
-USE [msdb]
-GO
-ALTER ROLE [TargetServersRole] ADD MEMBER [opserverDBA]
-GO
-"@
 
-Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-
-$sqlQuery = @"
-USE [msdb]
-GO
-GRANT SELECT ON [dbo].[sysjobs] TO [opserverDBA] AS [dbo]
-GO
---USE [msdb]
---GO
---GRANT EXECUTE ON [dbo].[sp_WhoIsActive] TO [opserverDBA] AS [dbo]
---GO
-USE [msdb]
-GO
-GRANT SELECT ON [dbo].[sysjobsteps] TO [opserverDBA] AS [dbo]
-GO
-USE [msdb]
-GO
-GRANT SELECT ON [dbo].[sysjobhistory] TO [opserverDBA] AS [dbo]
-GO
-USE [msdb]
-GO
-GRANT SELECT ON [dbo].[sysjobactivity] TO [opserverDBA] AS [dbo]
-GO
-USE [msdb]
-GO
-GRANT EXECUTE ON [dbo].[agent_datetime] TO [opserverDBA] AS [dbo]
-GO
-USE [msdb]
-GO
-GRANT SELECT ON [dbo].[syscateGOries] TO [opserverDBA] AS [dbo]
-GO
-USE [master]
-GO
-GRANT EXECUTE ON [dbo].[sp_WhoIsActive] TO [opserverDBA] AS [dbo]
+EXEC sys.sp_addsrvrolemember @loginame = N'opserverDBA', @rolename = N'processadmin'
 GO
 "@
 
@@ -6067,6 +5861,400 @@ GO
 Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
 
 $sqlQuery = @"
+ALTER DATABASE [BKTablesDB] SET RECOVERY Simple WITH NO_WAIT
+"@
+
+Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+# ---------------------------------------------------------------------------------------------------------------- #
+
+if($chooseOption -eq 1){
+    # Restore DB:
+	$sqlQuery = "
+	SELECT NAME
+	FROM sys.databases
+	WHERE database_id > 4 
+	and name not in ('BKTablesDB')
+	AND is_read_only = 0
+	"
+
+	$dbs = Invoke-Sqlcmd -ConnectionString $sourceConnectionString -Query $sqlQuery
+
+	$sqlQuery = "
+	SELECT @@SERVERNAME AS HostName
+	"
+
+	$sourceHostName = ((Invoke-Sqlcmd -ConnectionString $sourceConnectionString -Query $sqlQuery) | Select-Object -First 1).HostName
+
+	$nasFolder = "\\10.26.8.243\CMWLDBbackup\$sourceHostName\"
+	$tempFolder = "G:\tempDbRestore\"
+	New-Item -Path $tempFolder -ItemType Directory -Force | Out-Null
+	New-Item -Path "$nasFolder\tempDB\" -ItemType Directory -Force | Out-Null
+	New-Item -Path "D:\Database\Data\" -ItemType Directory -Force | Out-Null
+	New-Item -Path "D:\Database\Log\" -ItemType Directory -Force | Out-Null
+	New-Item -Path "G:\Database\Data\" -ItemType Directory -Force | Out-Null
+	New-Item -Path "G:\Database\Log\" -ItemType Directory -Force | Out-Null
+	New-Item -Path "H:\Database\Data\" -ItemType Directory -Force | Out-Null
+	New-Item -Path "H:\Database\Log\" -ItemType Directory -Force | Out-Null
+	New-Item -Path "I:\Database\Data\" -ItemType Directory -Force | Out-Null
+	New-Item -Path "I:\Database\Log\" -ItemType Directory -Force | Out-Null
+
+	# Copy backup file to local machine
+	for ($i = 0; $i -lt $dbs.Count; $i++) {
+		$isBackupFileExist = 0
+		$dates = Get-Childitem $nasFolder | Sort-Object -Descending
+		foreach($date in $dates){
+			$fullfile = Get-Childitem "$nasFolder\$date\DB_BACKUP_FULL" -Recurse |
+				Where-Object {$_.Extension -eq ".BAK" -and $_.Name -like "$($dbs[$i].NAME)*"} |
+				Sort-Object -Property LastWriteTime -Descending |
+				Select-Object -First 1
+			if ($fullfile){
+				Copy-Item -Path $fullfile.FullName -Destination "$tempFolder\$($dbs[$i].Name).BAK" -Force
+				Write-Host "Copy backup file for [$($dbs[$i].NAME)] done."
+				$isBackupFileExist = 1
+				break
+			}
+		}
+		
+		if(-not $isBackupFileExist){
+			Write-Host "Backup file for $($dbs[$i].NAME) doesn't exist."
+			continue
+		}
+
+		Write-Host "Restoring [$($dbs[$i].NAME)]..."
+		$sqlQuery = "
+		USE [master]
+		GO
+		RESTORE DATABASE [$($dbs[$i].NAME)] FROM DISK = N'$tempFolder\$($dbs[$i].Name).BAK' WITH FILE = 1, NOUNLOAD, REPLACE, STATS = 5
+		GO
+		"
+
+		Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+		Write-Host "Restore [$($dbs[$i].NAME)] done."
+	}
+
+	Remove-Item -Path $tempFolder -Recurse
+
+	# ---------------------------------------------------------------------------------------------------------------- #
+
+	# Create Linked Server from old DB:
+	# $sqlQuery = "
+	# SELECT name, product, provider, data_source, location, provider_string, catalog FROM sys.servers WHERE is_linked = 1
+	# "
+
+	# $sourceLinkedServers = Invoke-Sqlcmd -ConnectionString $sourceConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+	# foreach ($linkedServer in $sourceLinkedServers) {
+	#     $createLinkedServerScript = @"
+	# EXEC sp_addlinkedserver 
+	#     @server = N'$($linkedServer.name)', 
+	#     @srvproduct=N'$($linkedServer.product)', 
+	#     @provider=N'$($linkedServer.provider)', 
+	#     @datasrc=N'$($linkedServer.data_source)',
+	#     @catalog=N'$($linkedServer.catalog)';
+	# "@
+
+	#     Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $createLinkedServerScript -Querytimeout ([int]::MaxValue)
+
+	#     $copyLoginScript = "EXEC sp_addlinkedsrvlogin @rmtsrvname = N'$($linkedServer.name)', @useself = N'False', @locallogin = NULL, @rmtuser = N'CCWLCI', @rmtpassword = N'y9VhQ8L6d0a83ivt7aqQgw==';"
+		
+	#     Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $copyLoginScript -Querytimeout ([int]::MaxValue)
+	# }
+
+	# Write-Host "Linked servers copied from $sourceInstance to $targetInstance."
+
+	$linkedServerScript = [System.IO.File]::ReadAllText("G:\LinkedServer.sql")
+	Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $linkedServerScript -Querytimeout ([int]::MaxValue)
+	Remove-Item -Path "G:\LinkedServer.sql"
+
+	# ---------------------------------------------------------------------------------------------------------------- #
+
+	# Create SQL Agent Job from old DB:
+	# $sqlAgentJobScript = [System.IO.File]::ReadAllText("G:\SQLAgentJob.sql")
+	# Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlAgentJobScript -Querytimeout ([int]::MaxValue)
+	# Remove-Item -Path "G:\SQLAgentJob.sql"
+
+	# ---------------------------------------------------------------------------------------------------------------- #
+
+	# Create Security Login from script file
+	$sqlQuery = "
+	SELECT @@SERVERNAME AS HostName
+	"
+
+	$sourceHostName = ((Invoke-Sqlcmd -ConnectionString $sourceConnectionString -Query $sqlQuery) | Select-Object -First 1).HostName
+	$nasFolder = "\\10.26.8.243\CMWLDBbackup\$sourceHostName\"
+
+	$isBackupFileExist = 0
+	$dates = Get-Childitem $nasFolder | Sort-Object -Descending
+	foreach($date in $dates){
+		$loginFile = Get-Childitem "$nasFolder\$date\DB_BACKUP_FULL" -Recurse |
+			Where-Object {$_.Extension -eq ".sql" -and $_.Name -like "login*"} |
+			Sort-Object -Property LastWriteTime -Descending |
+			Select-Object -First 1
+		if ($loginFile){
+			Copy-Item -Path $loginFile.FullName -Destination "G:\login.sql" -Force
+			$loginScript = [System.IO.File]::ReadAllText("G:\login.sql")
+			Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $loginScript -Querytimeout ([int]::MaxValue)
+			$isBackupFileExist = 1
+			break
+		}
+	}
+
+	if(-not $isBackupFileExist){
+		Write-Host "Login file doesn't exist."
+	}
+
+	Remove-Item -Path "G:\login.sql"
+
+	# ---------------------------------------------------------------------------------------------------------------- #
+
+	# Move data file to G: and log file to H:
+	$dataFileLocationArray = @()
+	$logFileLocationArray = @()
+
+	$sqlQuery = "
+	SELECT NAME
+	FROM sys.databases
+	WHERE database_id > 4 
+	AND name not in ('BKTablesDB')
+	AND is_read_only = 0
+	"
+
+	$dbs = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+	Write-Host "Moving Data files and Log files..."
+	foreach($db in $dbs){
+		$sqlQuery = "
+		SELECT name, physical_name AS location  
+		FROM sys.master_files  
+		WHERE database_id = DB_ID(N'$($db.NAME)')
+		"
+
+		$fileInfos = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+		foreach($fileInfo in $fileInfos){
+			$fileName = $fileInfo.location -split '\\' | Select-Object -Last 1
+			$fileExtension = [System.IO.Path]::GetExtension($fileName)
+
+			if(($fileExtension -eq ".mdf") -or ($fileExtension -eq ".ndf")){
+				$sqlQuery = "
+				ALTER DATABASE [$($db.NAME)] MODIFY FILE ( NAME = '$($fileInfo.name)' , FILENAME = 'G:\Data\$fileName' );
+				"
+				$dataFileLocationArray += $fileInfo.location
+			}else{
+				$sqlQuery = "
+				ALTER DATABASE [$($db.NAME)] MODIFY FILE ( NAME = '$($fileInfo.name)' , FILENAME = 'H:\Log\$fileName' );
+				"
+				$logFileLocationArray += $fileInfo.location
+			}
+
+			Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+		}
+	}
+
+	Stop-Service -Name $SQLServiceName -Force
+	Stop-Service -Name $AgentServiceName -Force
+
+	foreach($dataFileLocation in $dataFileLocationArray){
+		Move-Item -Path $dataFileLocation -Destination "G:\Data\"
+	}
+
+	foreach($logFileLocation in $logFileLocationArray){
+		Move-Item -Path $logFileLocation -Destination "H:\Log\"
+	}
+
+	Start-Service -Name $SQLServiceName
+	Start-Service -Name $AgentServiceName
+
+	Remove-Item -Path "D:\Database\Data" -Recurse
+	Remove-Item -Path "D:\Database\Log" -Recurse
+	Remove-Item -Path "G:\Database" -Recurse
+	Remove-Item -Path "H:\Database" -Recurse
+	Remove-Item -Path "I:\Database" -Recurse
+
+	Write-Host "Moved Data files to G: and Log files to H:."
+
+	# ---------------------------------------------------------------------------------------------------------------- #
+
+	# # Merge mdf, ndf file to single mdf file
+	# $sqlQuery = "
+	# SELECT NAME
+	# FROM sys.databases
+	# WHERE database_id > 4 
+	# AND name not in ('BKTablesDB')
+	# AND is_read_only = 0
+	# "
+
+	# $dbs = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+	# foreach($db in $dbs){
+	# 	$sqlQuery = "
+	# 	USE [$($db.NAME)]
+	# 	GO
+	# 	SELECT name AS FileName,
+	# 	size/128.0 AS CurrentSizeMB,
+	# 	CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB,
+	# 	'ndf' AS Format
+	# 	FROM sys.database_files
+	# 	WHERE physical_name LIKE '%.ndf'
+	# 	UNION
+	# 	SELECT name AS FileName,
+	# 	size/128.0 AS CurrentSizeMB,
+	# 	CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB,
+	# 	'mdf' AS Format
+	# 	FROM sys.database_files
+	# 	WHERE physical_name LIKE '%.mdf'
+	# 	"
+
+	# 	$files = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+	# 	if(($files.Length -ne 1) -and ($files.Length -ne 8)){
+	# 		if(-not $files.Length){
+	# 			continue
+	# 		}
+	# 		$ndfTotalUseSpace = 0.0
+	# 		$mdfFileName= ""
+	# 		$mdfSize = 0
+	# 		foreach($file in $files){
+	# 			if($file.Format -eq "ndf"){
+	# 				$ndfTotalUseSpace += [decimal]($file.UseSpaceMB)
+	# 			}
+	# 			if($file.Format -eq "mdf"){
+	# 				$mdfFileName = $file.FileName
+	# 				$mdfSize = [int]($file.CurrentSizeMB)
+	# 			}
+	# 		}
+
+	# 		$ndfTotalUseSpace = [int][math]::Ceiling($ndfTotalUseSpace)
+
+	# 		$sqlQuery = "
+	# 		ALTER DATABASE [$($db.NAME)]
+	# 		MODIFY FILE
+	# 		(
+	# 			NAME = N'$mdfFileName',
+	# 			SIZE = $($mdfSize + $ndfTotalUseSpace)MB
+	# 		);
+	# 		USE [$($db.NAME)]
+	# 		GO
+	# 		"
+
+	# 		foreach($file in $files){
+	# 			if($file.Format -eq "ndf"){
+	# 				$sqlQuery += "
+	# 				DBCC SHRINKFILE (N'$($file.FileName)', EMPTYFILE);
+	# 				ALTER DATABASE [$($db.NAME)] REMOVE FILE [$($file.FileName)];
+	# 				"
+	# 			}
+	# 		}
+
+	# 		Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+	# 	}
+	# }
+
+	# # ---------------------------------------------------------------------------------------------------------------- #
+
+	# # Split all db to 8 files (1 .mdf and 7 .ndf)
+	# $sqlQuery = "
+	# SELECT NAME
+	# FROM sys.databases
+	# WHERE database_id > 4 
+	# AND name not in ('BKTablesDB')
+	# AND is_read_only = 0
+	# "
+
+	# $dbs = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+	# foreach($db in $dbs){
+	# 	$sqlQuery = "
+	# 	USE [$($db.NAME)]
+	# 	GO
+	# 	SELECT name AS FileName,
+	# 	CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB
+	# 	FROM sys.database_files
+	# 	WHERE physical_name LIKE '%.mdf'
+	# 	"
+
+	# 	$mdfFile = ((Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)) | Select-Object -First 1)
+	# 	$useSpace = $mdfFile.UseSpaceMB
+	# 	$initSize = [int][math]::Ceiling(($useSpace / 8.0))
+	# 	$growthSize = [int]([math]::Ceiling(($useSpace / 512.0)) * 8)	# set the value to nearest multiple of 8
+
+	# 	$sqlQuery = "
+	# 	USE [$($db.NAME)]
+	# 	GO
+	# 	DECLARE @dbName NVARCHAR(255) = N'$($db.NAME)';
+	# 	DECLARE @fileName NVARCHAR(255) = N'G:\Data\' + @dbName;
+	# 	DECLARE @fileCount INT = 8;
+	# 	DECLARE @i INT = 2;
+	# 	DECLARE @sql NVARCHAR(MAX);
+	# 	DECLARE @size NVARCHAR(10) = N'$($initSize)MB'; 
+
+	# 	WHILE @i <= @fileCount
+	# 	BEGIN
+	# 		SET @sql = N'ALTER DATABASE [' + @dbName + N'] ADD FILE ('
+	# 					+ N'NAME = N''' + @dbName + CAST(@i AS NVARCHAR(10)) + N''', '
+	# 					+ N'FILENAME = N''' + @fileName + CAST(@i AS NVARCHAR(10)) + N'.ndf'', '
+	# 					+ N'SIZE = ' + @size + ', '
+	# 					+ N'MAXSIZE = '+ @size +', '
+	# 					+ N'FILEGROWTH = '+ @size +''
+	# 					+ N');';
+			
+	# 		PRINT @sql;
+
+	# 		EXEC sp_executesql @sql;
+	# 		SET @i = @i + 1;
+	# 	END
+	# 	GO
+
+	# 	DBCC SHRINKFILE ('$($mdfFile.FileName)', EMPTYFILE);
+	# 	GO
+
+	# 	DBCC SHRINKFILE ('$($mdfFile.FileName)', $initSize);
+	# 	GO
+
+	# 	DECLARE @dbName NVARCHAR(255) = N'$($db.NAME)';
+	# 	DECLARE @fileName NVARCHAR(255) = N'G:\Data\' + @dbName;
+	# 	DECLARE @fileCount INT = 8;
+	# 	DECLARE @i INT = 1;
+	# 	DECLARE @sql NVARCHAR(MAX);
+	# 	DECLARE @size NVARCHAR(10) = N'$($growthSize)MB';
+
+	# 	WHILE @i <= @fileCount
+	# 	BEGIN
+	# 		SET @sql = N'ALTER DATABASE [' + @dbName + N'] MODIFY FILE ('
+	# 					+ N'NAME = N''' + @dbName + CASE WHEN @i > 1 THEN CAST(@i AS NVARCHAR(10)) ELSE '' END + N''', '
+	# 					+ N'MAXSIZE = UNLIMITED, '
+	# 					+ N'FILEGROWTH = '+ @size +''
+	# 					+ N');';
+			
+	# 		PRINT @sql;
+
+	# 		EXEC sp_executesql @sql;
+	# 		SET @i = @i + 1;
+	# 	END
+	# 	GO
+	# 	"
+
+	# 	Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+	# }
+}
+
+# ---------------------------------------------------------------------------------------------------------------- #
+
+# Change all Db owner to SA:
+$sqlQuery = "
+EXEC sp_MSforeachdb 
+ 'IF ''?'' NOT IN(''master'', ''model'', ''msdb'', ''tempdb'')
+  BEGIN 
+  USE [?] 
+  EXEC sp_changedbowner ''sa''
+  END'
+"
+Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+# ---------------------------------------------------------------------------------------------------------------- #
+
+# Create Backup Device for all dbs except system dbs
+$sqlQuery = @"
 declare @dbName varchar(50)
 declare @sql nvarchar(max)
 declare DBCursor cursor for  
@@ -6100,253 +6288,75 @@ deallocate DBCursor
 
 Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
 
+# ---------------------------------------------------------------------------------------------------------------- #
+
+# Crete opserverDBA user for all dbs and adjust role and permission
 $sqlQuery = @"
-ALTER DATABASE [BKTablesDB] SET RECOVERY Simple WITH NO_WAIT
+DECLARE @command varchar(4000)
+SELECT @command = 'USE [?]
+CREATE USER [opserverDBA] FOR LOGIN [opserverDBA]'
+
+EXEC sp_MSforeachdb @command
+GO
+USE [msdb]
+GO
+ALTER ROLE [DatabaseMailUserRole] ADD MEMBER [opserverDBA]
+GO
+USE [msdb]
+GO
+ALTER ROLE [SQLAgentOperatorRole] ADD MEMBER [opserverDBA]
+GO
+USE [msdb]
+GO
+ALTER ROLE [SQLAgentReaderRole] ADD MEMBER [opserverDBA]
+GO
+USE [msdb]
+GO
+ALTER ROLE [SQLAgentUserRole] ADD MEMBER [opserverDBA]
+GO
+USE [msdb]
+GO
+ALTER ROLE [TargetServersRole] ADD MEMBER [opserverDBA]
+GO
+"@
+
+Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+$sqlQuery = @"
+USE [msdb]
+GO
+GRANT SELECT ON [dbo].[sysjobs] TO [opserverDBA] AS [dbo]
+GO
+--USE [msdb]
+--GO
+--GRANT EXECUTE ON [dbo].[sp_WhoIsActive] TO [opserverDBA] AS [dbo]
+--GO
+USE [msdb]
+GO
+GRANT SELECT ON [dbo].[sysjobsteps] TO [opserverDBA] AS [dbo]
+GO
+USE [msdb]
+GO
+GRANT SELECT ON [dbo].[sysjobhistory] TO [opserverDBA] AS [dbo]
+GO
+USE [msdb]
+GO
+GRANT SELECT ON [dbo].[sysjobactivity] TO [opserverDBA] AS [dbo]
+GO
+USE [msdb]
+GO
+GRANT EXECUTE ON [dbo].[agent_datetime] TO [opserverDBA] AS [dbo]
+GO
+USE [msdb]
+GO
+GRANT SELECT ON [dbo].[syscateGOries] TO [opserverDBA] AS [dbo]
+GO
+USE [master]
+GO
+GRANT EXECUTE ON [dbo].[sp_WhoIsActive] TO [opserverDBA] AS [dbo]
+GO
 "@
 
 Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
 
 # ---------------------------------------------------------------------------------------------------------------- #
-
-# Change all Db owner to SA:
-$sqlQuery = "
-EXEC sp_MSforeachdb 
- 'IF ''?'' NOT IN(''master'', ''model'', ''msdb'', ''tempdb'')
-  BEGIN 
-  USE [?] 
-  EXEC sp_changedbowner ''sa''
-  END'
-"
-Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-
-# ---------------------------------------------------------------------------------------------------------------- #
-
-# Move data file to G: and log file to H:
-$dataFileLocationArray = @()
-$logFileLocationArray = @()
-
-$sqlQuery = @"
-SELECT NAME
-FROM sys.databases
-WHERE database_id > 4 
-AND name not in ('BKTablesDB')
-AND is_read_only = 0
-"@
-
-$dbs = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-
-Write-Host "Moving Data files and Log files..."
-foreach($db in $dbs){
-	$sqlQuery = "
-	SELECT name, physical_name AS location  
-	FROM sys.master_files  
-	WHERE database_id = DB_ID(N'$($db.NAME)')
-	"
-
-	$fileInfos = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-
-	foreach($fileInfo in $fileInfos){
-		$fileName = $fileInfo.location -split '\\' | Select-Object -Last 1
-		$fileExtension = [System.IO.Path]::GetExtension($fileName)
-
-		if(($fileExtension -eq ".mdf") -or ($fileExtension -eq ".ndf")){
-			$sqlQuery = "
-			ALTER DATABASE [$($db.NAME)] MODIFY FILE ( NAME = '$($fileInfo.name)' , FILENAME = 'G:\Data\$fileName' );
-			"
-			$dataFileLocationArray += $fileInfo.location
-		}else{
-			$sqlQuery = "
-			ALTER DATABASE [$($db.NAME)] MODIFY FILE ( NAME = '$($fileInfo.name)' , FILENAME = 'H:\Log\$fileName' );
-			"
-			$logFileLocationArray += $fileInfo.location
-		}
-
-		Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-	}
-}
-
-Stop-Service -Name $SQLServiceName -Force
-Stop-Service -Name $AgentServiceName -Force
-
-foreach($dataFileLocation in $dataFileLocationArray){
-	Move-Item -Path $dataFileLocation -Destination "G:\Data\"
-}
-
-foreach($logFileLocation in $logFileLocationArray){
-	Move-Item -Path $logFileLocation -Destination "H:\Log\"
-}
-
-Start-Service -Name $SQLServiceName
-Start-Service -Name $AgentServiceName
-
-Remove-Item -Path "D:\Database\Data" -Recurse
-Remove-Item -Path "D:\Database\Log" -Recurse
-Remove-Item -Path "G:\Database" -Recurse
-Remove-Item -Path "H:\Database" -Recurse
-Remove-Item -Path "I:\Database" -Recurse
-
-Write-Host "Moved Data files to G: and Log files to H:."
-
-# ---------------------------------------------------------------------------------------------------------------- #
-
-# # Merge mdf, ndf file to single mdf file
-# $sqlQuery = @"
-# SELECT NAME
-# FROM sys.databases
-# WHERE database_id > 4 
-# AND name not in ('BKTablesDB')
-# AND is_read_only = 0
-# "@
-
-# $dbs = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-
-# foreach($db in $dbs){
-# 	$sqlQuery = "
-# 	USE [$($db.NAME)]
-# 	GO
-# 	SELECT name AS FileName,
-# 	size/128.0 AS CurrentSizeMB,
-# 	CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB,
-# 	'ndf' AS Format
-# 	FROM sys.database_files
-# 	WHERE physical_name LIKE '%.ndf'
-# 	UNION
-# 	SELECT name AS FileName,
-# 	size/128.0 AS CurrentSizeMB,
-# 	CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB,
-# 	'mdf' AS Format
-# 	FROM sys.database_files
-# 	WHERE physical_name LIKE '%.mdf'
-# 	"
-
-# 	$files = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-
-# 	if(($files.Length -ne 1) -and ($files.Length -ne 8)){
-# 		if(-not $files.Length){
-# 			continue
-# 		}
-# 		$ndfTotalUseSpace = 0.0
-# 		$mdfFileName= ""
-# 		$mdfSize = 0
-# 		foreach($file in $files){
-# 			if($file.Format -eq "ndf"){
-# 				$ndfTotalUseSpace += [decimal]($file.UseSpaceMB)
-# 			}
-# 			if($file.Format -eq "mdf"){
-# 				$mdfFileName = $file.FileName
-# 				$mdfSize = [int]($file.CurrentSizeMB)
-# 			}
-# 		}
-
-# 		$ndfTotalUseSpace = [int][math]::Ceiling($ndfTotalUseSpace)
-
-# 		$sqlQuery = "
-# 		ALTER DATABASE [$($db.NAME)]
-# 		MODIFY FILE
-# 		(
-# 			NAME = N'$mdfFileName',
-# 			SIZE = $($mdfSize + $ndfTotalUseSpace)MB
-# 		);
-# 		USE [$($db.NAME)]
-# 		GO
-# 		"
-
-# 		foreach($file in $files){
-# 			if($file.Format -eq "ndf"){
-# 				$sqlQuery += "
-# 				DBCC SHRINKFILE (N'$($file.FileName)', EMPTYFILE);
-# 				ALTER DATABASE [$($db.NAME)] REMOVE FILE [$($file.FileName)];
-# 				"
-# 			}
-# 		}
-
-# 		Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-# 	}
-# }
-
-# # ---------------------------------------------------------------------------------------------------------------- #
-
-# # Split all db to 8 files (1 .mdf and 7 .ndf)
-# $sqlQuery = @"
-# SELECT NAME
-# FROM sys.databases
-# WHERE database_id > 4 
-# AND name not in ('BKTablesDB')
-# AND is_read_only = 0
-# "@
-
-# $dbs = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-
-# foreach($db in $dbs){
-# 	$sqlQuery = "
-# 	USE [$($db.NAME)]
-# 	GO
-# 	SELECT name AS FileName,
-# 	CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB
-# 	FROM sys.database_files
-# 	WHERE physical_name LIKE '%.mdf'
-# 	"
-
-# 	$mdfFile = ((Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)) | Select-Object -First 1)
-# 	$useSpace = $mdfFile.UseSpaceMB
-# 	$initSize = [int][math]::Ceiling(($useSpace / 8.0))
-# 	$growthSize = [int]([math]::Ceiling(($useSpace / 512.0)) * 8)	# set the value to nearest multiple of 8
-
-# 	$sqlQuery = "
-# 	USE [$($db.NAME)]
-# 	GO
-# 	DECLARE @dbName NVARCHAR(255) = N'$($db.NAME)';
-# 	DECLARE @fileName NVARCHAR(255) = N'G:\Data\' + @dbName;
-# 	DECLARE @fileCount INT = 8;
-# 	DECLARE @i INT = 2;
-# 	DECLARE @sql NVARCHAR(MAX);
-# 	DECLARE @size NVARCHAR(10) = N'$($initSize)MB'; 
-
-# 	WHILE @i <= @fileCount
-# 	BEGIN
-# 		SET @sql = N'ALTER DATABASE [' + @dbName + N'] ADD FILE ('
-# 					+ N'NAME = N''' + @dbName + CAST(@i AS NVARCHAR(10)) + N''', '
-# 					+ N'FILENAME = N''' + @fileName + CAST(@i AS NVARCHAR(10)) + N'.ndf'', '
-# 					+ N'SIZE = ' + @size + ', '
-# 					+ N'MAXSIZE = '+ @size +', '
-# 					+ N'FILEGROWTH = '+ @size +''
-# 					+ N');';
-		
-# 		PRINT @sql;
-
-# 		EXEC sp_executesql @sql;
-# 		SET @i = @i + 1;
-# 	END
-# 	GO
-
-# 	DBCC SHRINKFILE ('$($mdfFile.FileName)', EMPTYFILE);
-# 	GO
-
-# 	DBCC SHRINKFILE ('$($mdfFile.FileName)', $initSize);
-# 	GO
-
-# 	DECLARE @dbName NVARCHAR(255) = N'$($db.NAME)';
-# 	DECLARE @fileName NVARCHAR(255) = N'G:\Data\' + @dbName;
-# 	DECLARE @fileCount INT = 8;
-# 	DECLARE @i INT = 1;
-# 	DECLARE @sql NVARCHAR(MAX);
-# 	DECLARE @size NVARCHAR(10) = N'$($growthSize)MB';
-
-# 	WHILE @i <= @fileCount
-# 	BEGIN
-# 		SET @sql = N'ALTER DATABASE [' + @dbName + N'] MODIFY FILE ('
-# 					+ N'NAME = N''' + @dbName + CASE WHEN @i > 1 THEN CAST(@i AS NVARCHAR(10)) ELSE '' END + N''', '
-# 					+ N'MAXSIZE = UNLIMITED, '
-# 					+ N'FILEGROWTH = '+ @size +''
-# 					+ N');';
-		
-# 		PRINT @sql;
-
-# 		EXEC sp_executesql @sql;
-# 		SET @i = @i + 1;
-# 	END
-# 	GO
-# 	"
-
-# 	Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-# }
