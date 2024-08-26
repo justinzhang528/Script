@@ -5938,40 +5938,295 @@ if($chooseOption -eq 1){
 	# ---------------------------------------------------------------------------------------------------------------- #
 
 	# Create Linked Server from old DB:
-	# $sqlQuery = "
-	# SELECT name, product, provider, data_source, location, provider_string, catalog FROM sys.servers WHERE is_linked = 1
-	# "
 
-	# $sourceLinkedServers = Invoke-Sqlcmd -ConnectionString $sourceConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-	# foreach ($linkedServer in $sourceLinkedServers) {
-	#     $createLinkedServerScript = @"
-	# EXEC sp_addlinkedserver 
-	#     @server = N'$($linkedServer.name)', 
-	#     @srvproduct=N'$($linkedServer.product)', 
-	#     @provider=N'$($linkedServer.provider)', 
-	#     @datasrc=N'$($linkedServer.data_source)',
-	#     @catalog=N'$($linkedServer.catalog)';
-	# "@
+	$connectionString = "Server=$sourceServer;Database=master;User ID=CCWLCI;Password=y9VhQ8L6d0a83ivt7aqQgw==;TrustServerCertificate=True;"
 
-	#     Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $createLinkedServerScript -Querytimeout ([int]::MaxValue)
+	$sqlQuery = "
+	SELECT
+		srv.server_id,
+		ISNULL(srv.name,'') as name,
+		ISNULL(srv.provider,'') as provider,
+		ISNULL(srv.product,'') as product,
+		ISNULL(srv.data_source,'') as data_source,
+		ISNULL(srv.provider_string,'') as provider_string,
+		ISNULL(srv.location,'') as location,
+		ISNULL(srv.catalog,'') as catalog,
+		srv.is_collation_compatible,
+		srv.is_data_access_enabled,
+		srv.is_remote_login_enabled,
+		srv.is_rpc_out_enabled,
+		srv.uses_remote_collation,
+		ISNULL(srv.collation_name,'NULL') AS collation_name,
+		srv.connect_timeout,
+		srv.query_timeout,
+		srv.is_distributor,
+		srv.is_publisher,
+		srv.is_subscriber,
+		srv.lazy_schema_validation,
+		srv.is_remote_proc_transaction_promotion_enabled
+	FROM sys.servers srv
+	WHERE srv.is_linked = 1;
+	"
 
-	#     $copyLoginScript = "EXEC sp_addlinkedsrvlogin @rmtsrvname = N'$($linkedServer.name)', @useself = N'False', @locallogin = NULL, @rmtuser = N'CCWLCI', @rmtpassword = N'y9VhQ8L6d0a83ivt7aqQgw==';"
+	$sourceLinkedServers = Invoke-Sqlcmd -ConnectionString $connectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+	foreach ($linkedServer in $sourceLinkedServers) {
+
+		$sqlQuery = "
+		SELECT
+			ll.uses_self_credential AS useself,
+			ISNULL(ll.remote_name,'NULL') AS rmtuser,
+			ISNULL(sp.name,'') AS locallogin
+		FROM sys.linked_logins AS ll
+		LEFT JOIN sys.server_principals AS sp
+		ON ll.local_principal_id = sp.principal_id
+		WHERE server_id = '$($linkedServer.server_id)'
+		"
+
+		$linkedLogins = Invoke-Sqlcmd -ConnectionString $connectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+		$createLinkedServerScript = "
+		EXEC sp_addlinkedserver 
+			@server = N'$($linkedServer.name)', 
+			@srvproduct=N'$($linkedServer.product)', 
+			@provider=N'$($linkedServer.provider)',  
+			@datasrc=N'$($linkedServer.data_source)',
+			@location=N'$($linkedServer.location)',
+			@provstr=N'$($linkedServer.provider_string)',
+			@catalog=N'$($linkedServer.catalog)';
+		"
+
+		foreach($login in $linkedLogins){
+			$rmtuser = $login.rmtuser
+			$rmtpassword = "y9VhQ8L6d0a83ivt7aqQgw=="
+			if($rmtuser -eq 'NULL' ){
+				$rmtpassword = ''
+			}
+
+			if($login.locallogin -eq ''){
+				$createLinkedServerScript += "
+				EXEC sp_addlinkedsrvlogin
+					@rmtsrvname = N'$($linkedServer.name)',
+					@useself = N'$($login.useself)',
+					@locallogin = NULL,
+					@rmtuser = N'$($rmtuser)',
+					@rmtpassword = N'$($rmtpassword)';
+				"
+			}else{
+				$createLinkedServerScript += "
+				EXEC sp_addlinkedsrvlogin
+					@rmtsrvname = N'$($linkedServer.name)',
+					@useself = N'$($login.useself)',
+					@locallogin = N'$($login.locallogin)',
+					@rmtuser = N'$($rmtuser)',
+					@rmtpassword = N'$($rmtpassword)';
+				"
+			}
+		}
 		
-	#     Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $copyLoginScript -Querytimeout ([int]::MaxValue)
-	# }
+		$createLinkedServerScript += "
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'collation compatible', @optvalue = N'$($linkedServer.is_collation_compatible)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'data access', @optvalue = N'$($linkedServer.is_data_access_enabled)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'rpc', @optvalue = N'$($linkedServer.is_remote_login_enabled)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'rpc out', @optvalue = N'$($linkedServer.is_rpc_out_enabled)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'use remote collation', @optvalue = N'$($linkedServer.uses_remote_collation)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'collation name', @optvalue = N'$($linkedServer.collation_name)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'connect timeout', @optvalue = N'$($linkedServer.connect_timeout)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'query timeout', @optvalue = N'$($linkedServer.query_timeout)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'dist', @optvalue = N'$($linkedServer.is_distributor)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'pub', @optvalue = N'$($linkedServer.is_publisher)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'sub', @optvalue = N'$($linkedServer.is_subscriber)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'lazy schema validation', @optvalue = N'$($linkedServer.lazy_schema_validation)';
+		EXEC sp_serveroption @server = N'$($linkedServer.name)', @optname = N'remote proc transaction promotion', @optvalue = N'$($linkedServer.is_remote_proc_transaction_promotion_enabled)';
+		"
+		
+		Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $createLinkedServerScript -Querytimeout ([int]::MaxValue)
+	}
 
-	# Write-Host "Linked servers copied from $sourceInstance to $targetInstance."
-
-	$linkedServerScript = [System.IO.File]::ReadAllText("G:\LinkedServer.sql")
-	Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $linkedServerScript -Querytimeout ([int]::MaxValue)
-	Remove-Item -Path "G:\LinkedServer.sql"
+	Write-Host "Linked servers copied from $sourceServer to $targetServer."
 
 	# ---------------------------------------------------------------------------------------------------------------- #
 
 	# Create SQL Agent Job from old DB:
-	# $sqlAgentJobScript = [System.IO.File]::ReadAllText("G:\SQLAgentJob.sql")
-	# Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlAgentJobScript -Querytimeout ([int]::MaxValue)
-	# Remove-Item -Path "G:\SQLAgentJob.sql"
+	$connectionString = "Server=$sourceServer;Database=master;User ID=CCWLCI;Password=y9VhQ8L6d0a83ivt7aqQgw==;TrustServerCertificate=True;"
+
+	$sqlQuery = "
+	SELECT 
+		sj.enabled,
+		sj.name AS job_name,
+		sj.notify_level_eventlog,
+		sj.notify_level_email,
+		sj.notify_level_netsend,
+		sj.notify_level_page,
+		sj.delete_level,
+		sj.description,
+		sc.name AS category_name,
+		sp.name AS owner_login_name,
+		sj.job_id,
+		sj.start_step_id,
+		sc.category_class AS category_class_id,
+		ISNULL(sts.server_name, N'(local)') AS server_name,
+		CASE 
+			WHEN sc.category_class = 1 THEN N'JOB'
+			WHEN sc.category_class = 2 THEN N'ALERT'
+			WHEN sc.category_class = 3 THEN N'OPERATOR'
+		END AS category_class,
+		CASE
+			WHEN sc.category_type = 1 THEN N'LOCAL'
+			WHEN sc.category_type = 2 THEN N'MULTISERVER'
+			WHEN sc.category_type = 3 THEN N'NONE'
+		END AS category_type
+	FROM msdb.dbo.sysjobs AS sj
+	INNER JOIN msdb.dbo.syscategories AS sc
+	ON sj.category_id = sc.category_id
+	INNER JOIN sys.server_principals AS sp
+	ON sj.owner_sid = sp.sid
+	INNER JOIN msdb.dbo.sysjobservers AS sjs
+	ON sj.job_id = sjs.job_id
+	LEFT JOIN msdb.dbo.systargetservers AS sts
+	ON sjs.server_id = sts.server_id
+	"
+
+	$jobs = Invoke-Sqlcmd -ConnectionString $connectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+	$createJobQuery = ""
+
+	foreach($job in $jobs){
+		$createJobQuery += "
+		USE [msdb]
+		GO
+
+		BEGIN TRANSACTION
+		DECLARE @ReturnCode INT
+		SELECT @ReturnCode = 0
+
+		IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'$($job.category_name)' AND category_class=$($job.category_class_id))
+		BEGIN
+		EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'$($job.category_class)', @type=N'$($job.category_type)', @name=N'$($job.category_name)'
+		IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+		END
+
+		DECLARE @jobId BINARY(16)
+		EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'$($job.job_name)', 
+				@enabled=$($job.enabled), 
+				@notify_level_eventlog=$($job.notify_level_eventlog), 
+				@notify_level_email=$($job.notify_level_email), 
+				@notify_level_netsend=$($job.notify_level_netsend), 
+				@notify_level_page=$($job.notify_level_page), 
+				@delete_level=$($job.delete_level), 
+				@description=N'$($job.description)', 
+				@category_name=N'$($job.category_name)', 
+				@owner_login_name=N'$($job.owner_login_name)', @job_id = @jobId OUTPUT
+		IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+		"
+
+		$jobStepQuery = "
+		SELECT
+			job_id,
+			step_name,
+			step_id,
+			cmdexec_success_code,
+			on_success_action,
+			on_success_step_id,
+			on_fail_action,
+			on_fail_step_id,
+			retry_attempts,
+			retry_interval,
+			os_run_priority,
+			subsystem,
+			command,
+			database_name,
+			flags
+		FROM msdb.dbo.sysjobsteps
+		WHERE job_id = '$($job.job_id)'
+		"
+
+		$jobSteps = Invoke-Sqlcmd -ConnectionString $connectionString -Query $jobStepQuery -Querytimeout ([int]::MaxValue)
+
+		foreach($step in $jobSteps){
+			$createJobQuery += "
+			EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'$($step.step_name)', 
+				@step_id=$($step.step_id), 
+				@cmdexec_success_code=$($step.cmdexec_success_code), 
+				@on_success_action=$($step.on_success_action), 
+				@on_success_step_id=$($step.on_success_step_id), 
+				@on_fail_action=$($step.on_fail_action), 
+				@on_fail_step_id=$($step.on_fail_step_id), 
+				@retry_attempts=$($step.retry_attempts), 
+				@retry_interval=$($step.retry_interval), 
+				@os_run_priority=$($step.os_run_priority),
+				@subsystem=N'$($step.subsystem)', 
+				@command=N'$($step.command -replace "'", "''")', 
+				@database_name=N'$($step.database_name)', 
+				@flags=$($step.flags)
+			IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+			"
+		}
+
+		$createJobQuery += "
+		EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = $($job.start_step_id)
+		IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+		"
+
+		$scheduleQuery = "
+		SELECT 
+			sjs.job_id,
+			ss.name,
+			ss.enabled,
+			ss.freq_type,
+			ss.freq_interval,
+			ss.freq_subday_type,
+			ss.freq_subday_interval,
+			ss.freq_relative_interval,
+			ss.freq_recurrence_factor,
+			ss.active_start_date,
+			ss.active_end_date,
+			ss.active_start_time,
+			ss.active_end_time,
+			ss.schedule_uid
+		FROM msdb.dbo.sysjobschedules AS sjs
+		INNER JOIN msdb.dbo.sysschedules AS ss
+		ON sjs.schedule_id = ss.schedule_id
+		WHERE sjs.job_id = '$($job.job_id)'
+		"
+
+		$schedules = Invoke-Sqlcmd -ConnectionString $connectionString -Query $scheduleQuery -Querytimeout ([int]::MaxValue)
+
+		foreach($schedule in $schedules){
+			$createJobQuery += "
+			EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'$($schedule.name)', 
+				@enabled=$($schedule.enabled), 
+				@freq_type=$($schedule.freq_type), 
+				@freq_interval=$($schedule.freq_interval), 
+				@freq_subday_type=$($schedule.freq_subday_type), 
+				@freq_subday_interval=$($schedule.freq_subday_interval), 
+				@freq_relative_interval=$($schedule.freq_relative_interval), 
+				@freq_recurrence_factor=$($schedule.freq_recurrence_factor), 
+				@active_start_date=$($schedule.active_start_date), 
+				@active_end_date=$($schedule.active_end_date), 
+				@active_start_time=$($schedule.active_start_time), 
+				@active_end_time=$($schedule.active_end_time), 
+				@schedule_uid=N'$($schedule.schedule_uid)'
+			IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+			"
+		}
+
+		$createJobQuery += "
+		EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'$($job.server_name)'
+		IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+		COMMIT TRANSACTION
+		GOTO EndSave
+		QuitWithRollback:
+			IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+		EndSave:
+		GO
+
+		"
+	}
+
+	Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $createJobQuery -Querytimeout ([int]::MaxValue)
+
+	Write-Host "SQL Agent Jobs copied from $sourceServer to $targetServer."
 
 	# ---------------------------------------------------------------------------------------------------------------- #
 
@@ -6287,6 +6542,10 @@ deallocate DBCursor
 "@
 
 Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+New-Item -Path "D:\db_backup_diff" -ItemType Directory -Force | Out-Null
+New-Item -Path "D:\db_backup_full" -ItemType Directory -Force | Out-Null
+New-Item -Path "D:\db_backup_log" -ItemType Directory -Force | Out-Null
 
 # ---------------------------------------------------------------------------------------------------------------- #
 
