@@ -6330,167 +6330,181 @@ if($chooseOption -eq 1){
 
 	# ---------------------------------------------------------------------------------------------------------------- #
 
-	# # Merge mdf, ndf file to single mdf file
-	# $sqlQuery = "
-	# SELECT NAME
-	# FROM sys.databases
-	# WHERE database_id > 4 
-	# AND name not in ('BKTablesDB')
-	# AND is_read_only = 0
-	# "
+	# Split data file to 8 files (1 .mdf and 7 .ndf)
+	$sqlQuery = "
+	SELECT NAME
+	FROM sys.databases
+	WHERE database_id > 4 
+	AND name not in ('BKTablesDB')
+	AND is_read_only = 0
+	"
 
-	# $dbs = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+	$dbs = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
 
-	# foreach($db in $dbs){
-	# 	$sqlQuery = "
-	# 	USE [$($db.NAME)]
-	# 	GO
-	# 	SELECT name AS FileName,
-	# 	size/128.0 AS CurrentSizeMB,
-	# 	CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB,
-	# 	'ndf' AS Format
-	# 	FROM sys.database_files
-	# 	WHERE physical_name LIKE '%.ndf'
-	# 	UNION
-	# 	SELECT name AS FileName,
-	# 	size/128.0 AS CurrentSizeMB,
-	# 	CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB,
-	# 	'mdf' AS Format
-	# 	FROM sys.database_files
-	# 	WHERE physical_name LIKE '%.mdf'
-	# 	"
+	foreach($db in $dbs){
+		$sqlQuery = "
+		USE [$($db.NAME)]
+		GO
+		SELECT
+			df.name AS FileName,
+			fg.name AS FileGroupName,
+			df.size/128.0 AS CurrentSizeMB,
+			CAST(FILEPROPERTY(df.name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB,
+			df.size/128.0 - CAST(FILEPROPERTY(df.name, 'SpaceUsed') AS INT)/128.0 AS FreeSpaceMB,
+			'mdf' AS Format
+		FROM sys.database_files AS df
+		LEFT JOIN sys.filegroups AS fg
+		ON df.data_space_id = fg.data_space_id
+		WHERE physical_name LIKE '%.mdf'
+		UNION
+		SELECT
+			df.name AS FileName,
+			fg.name AS FileGroupName,
+			df.size/128.0 AS CurrentSizeMB,
+			CAST(FILEPROPERTY(df.name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB,
+			df.size/128.0 - CAST(FILEPROPERTY(df.name, 'SpaceUsed') AS INT)/128.0 AS FreeSpaceMB,
+			'ndf' AS Format
+		FROM sys.database_files AS df
+		LEFT JOIN sys.filegroups AS fg
+		ON df.data_space_id = fg.data_space_id
+		WHERE physical_name LIKE '%.ndf'
+		"
 
-	# 	$files = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+		$dataFiles = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
 
-	# 	if(($files.Length -ne 1) -and ($files.Length -ne 8)){
-	# 		if(-not $files.Length){
-	# 			continue
-	# 		}
-	# 		$ndfTotalUseSpace = 0.0
-	# 		$mdfFileName= ""
-	# 		$mdfSize = 0
-	# 		foreach($file in $files){
-	# 			if($file.Format -eq "ndf"){
-	# 				$ndfTotalUseSpace += [decimal]($file.UseSpaceMB)
-	# 			}
-	# 			if($file.Format -eq "mdf"){
-	# 				$mdfFileName = $file.FileName
-	# 				$mdfSize = [int]($file.CurrentSizeMB)
-	# 			}
-	# 		}
+		$fileCount = 1
+		$primaryFileGroupCount = 1
+		$otherFileGroupCount = 0
+		if($dataFiles.Length){
+			$fileCount = $dataFiles.Length
+			$primaryFileGroup = $dataFiles | Where-Object { $_.FileGroupName -eq 'PRIMARY' }
+			if($primaryFileGroup.count){
+				$primaryFileGroupCount = $primaryFileGroup.count
+			}
+			$otherFileGroupCount = $fileCount - $primaryFileGroupCount
+		}
 
-	# 		$ndfTotalUseSpace = [int][math]::Ceiling($ndfTotalUseSpace)
+		if($fileCount -lt 8){
+			# if primary file group has more than 1 file, then merge primary file group files
+			if($primaryFileGroupCount -gt 1){
+				$ndfTotalUseSpace = 0.0
+				$mdfFileName= ""
+				$mdfSize = 0
+				foreach($file in $dataFiles){
+					if(($file.Format -eq "ndf") -and ($file.FileGroupName -eq "PRIMARY")){
+						$ndfTotalUseSpace += [decimal]($file.UseSpaceMB)
+					}
+					if(($file.Format -eq "mdf") -and ($file.FileGroupName -eq "PRIMARY")){
+						$mdfFileName = $file.FileName
+						$mdfSize = [int]($file.CurrentSizeMB)
+					}
+				}
+	
+				$ndfTotalUseSpace = [int][math]::Ceiling($ndfTotalUseSpace)
+	
+				$sqlQuery = "
+				ALTER DATABASE [$($db.NAME)]
+				MODIFY FILE
+				(
+					NAME = N'$mdfFileName',
+					SIZE = $($mdfSize + $ndfTotalUseSpace)MB
+				);
+				USE [$($db.NAME)]
+				GO
+				"
+	
+				foreach($file in $dataFiles){
+					if(($file.Format -eq "ndf") -and ($file.FileGroupName -eq "PRIMARY")){
+						$sqlQuery += "
+						DBCC SHRINKFILE (N'$($file.FileName)', EMPTYFILE);
+						ALTER DATABASE [$($db.NAME)] REMOVE FILE [$($file.FileName)];
+						"
+					}
+				}
+	
+				Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+			}
 
-	# 		$sqlQuery = "
-	# 		ALTER DATABASE [$($db.NAME)]
-	# 		MODIFY FILE
-	# 		(
-	# 			NAME = N'$mdfFileName',
-	# 			SIZE = $($mdfSize + $ndfTotalUseSpace)MB
-	# 		);
-	# 		USE [$($db.NAME)]
-	# 		GO
-	# 		"
+			$sqlQuery = "
+			USE [$($db.NAME)]
+			GO
+			SELECT
+				df.name AS FileName,
+				fg.name AS FileGroupName,
+				df.size/128.0 AS CurrentSizeMB,
+				CAST(FILEPROPERTY(df.name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB,
+				df.size/128.0 - CAST(FILEPROPERTY(df.name, 'SpaceUsed') AS INT)/128.0 AS FreeSpaceMB
+			FROM sys.database_files AS df
+			LEFT JOIN sys.filegroups AS fg
+			ON df.data_space_id = fg.data_space_id
+			WHERE physical_name LIKE '%.mdf'
+			"
 
-	# 		foreach($file in $files){
-	# 			if($file.Format -eq "ndf"){
-	# 				$sqlQuery += "
-	# 				DBCC SHRINKFILE (N'$($file.FileName)', EMPTYFILE);
-	# 				ALTER DATABASE [$($db.NAME)] REMOVE FILE [$($file.FileName)];
-	# 				"
-	# 			}
-	# 		}
+			$splitFileCount = 8 - $otherFileGroupCount
+			$mdfFile = ((Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)) | Select-Object -First 1)
+			$useSpace = $mdfFile.UseSpaceMB
+			$initSize = [int][math]::Ceiling(($useSpace / $splitFileCount))
+			$growthSize = [int]([math]::Ceiling(($useSpace / ($splitFileCount * 8 * 8.0))) * 8)	# set the value to nearest multiple of 8
 
-	# 		Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-	# 	}
-	# }
+			$sqlQuery = "
+			USE [$($db.NAME)]
+			GO
+			DECLARE @dbName NVARCHAR(255) = N'$($db.NAME)';
+			DECLARE @fileName NVARCHAR(255) = N'G:\Data\' + @dbName;
+			DECLARE @fileCount INT = $splitFileCount;
+			DECLARE @i INT = 2;
+			DECLARE @sql NVARCHAR(MAX);
+			DECLARE @size NVARCHAR(10) = N'$($initSize)MB'; 
 
-	# # ---------------------------------------------------------------------------------------------------------------- #
+			WHILE @i <= @fileCount
+			BEGIN
+				SET @sql = N'ALTER DATABASE [' + @dbName + N'] ADD FILE ('
+							+ N'NAME = N''' + @dbName + CAST(@i AS NVARCHAR(10)) + N''', '
+							+ N'FILENAME = N''' + @fileName + CAST(@i AS NVARCHAR(10)) + N'.ndf'', '
+							+ N'SIZE = ' + @size + ', '
+							+ N'MAXSIZE = '+ @size +', '
+							+ N'FILEGROWTH = '+ @size +''
+							+ N');';
+				
+				PRINT @sql;
 
-	# # Split all db to 8 files (1 .mdf and 7 .ndf)
-	# $sqlQuery = "
-	# SELECT NAME
-	# FROM sys.databases
-	# WHERE database_id > 4 
-	# AND name not in ('BKTablesDB')
-	# AND is_read_only = 0
-	# "
+				EXEC sp_executesql @sql;
+				SET @i = @i + 1;
+			END
+			GO
 
-	# $dbs = Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+			DBCC SHRINKFILE ('$($mdfFile.FileName)', EMPTYFILE);
+			GO
 
-	# foreach($db in $dbs){
-	# 	$sqlQuery = "
-	# 	USE [$($db.NAME)]
-	# 	GO
-	# 	SELECT name AS FileName,
-	# 	CAST(FILEPROPERTY(name, 'SpaceUsed') AS INT)/128.0 AS UseSpaceMB
-	# 	FROM sys.database_files
-	# 	WHERE physical_name LIKE '%.mdf'
-	# 	"
+			DBCC SHRINKFILE ('$($mdfFile.FileName)', $initSize);
+			GO
 
-	# 	$mdfFile = ((Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)) | Select-Object -First 1)
-	# 	$useSpace = $mdfFile.UseSpaceMB
-	# 	$initSize = [int][math]::Ceiling(($useSpace / 8.0))
-	# 	$growthSize = [int]([math]::Ceiling(($useSpace / 512.0)) * 8)	# set the value to nearest multiple of 8
+			DECLARE @dbName NVARCHAR(255) = N'$($db.NAME)';
+			DECLARE @fileName NVARCHAR(255) = N'G:\Data\' + @dbName;
+			DECLARE @fileCount INT = $splitFileCount;
+			DECLARE @i INT = 1;
+			DECLARE @sql NVARCHAR(MAX);
+			DECLARE @size NVARCHAR(10) = N'$($growthSize)MB';
 
-	# 	$sqlQuery = "
-	# 	USE [$($db.NAME)]
-	# 	GO
-	# 	DECLARE @dbName NVARCHAR(255) = N'$($db.NAME)';
-	# 	DECLARE @fileName NVARCHAR(255) = N'G:\Data\' + @dbName;
-	# 	DECLARE @fileCount INT = 8;
-	# 	DECLARE @i INT = 2;
-	# 	DECLARE @sql NVARCHAR(MAX);
-	# 	DECLARE @size NVARCHAR(10) = N'$($initSize)MB'; 
+			WHILE @i <= @fileCount
+			BEGIN
+				SET @sql = N'ALTER DATABASE [' + @dbName + N'] MODIFY FILE ('
+							+ N'NAME = N''' + @dbName + CASE WHEN @i > 1 THEN CAST(@i AS NVARCHAR(10)) ELSE '' END + N''', '
+							+ N'MAXSIZE = UNLIMITED, '
+							+ N'FILEGROWTH = '+ @size +''
+							+ N');';
+				
+				PRINT @sql;
 
-	# 	WHILE @i <= @fileCount
-	# 	BEGIN
-	# 		SET @sql = N'ALTER DATABASE [' + @dbName + N'] ADD FILE ('
-	# 					+ N'NAME = N''' + @dbName + CAST(@i AS NVARCHAR(10)) + N''', '
-	# 					+ N'FILENAME = N''' + @fileName + CAST(@i AS NVARCHAR(10)) + N'.ndf'', '
-	# 					+ N'SIZE = ' + @size + ', '
-	# 					+ N'MAXSIZE = '+ @size +', '
-	# 					+ N'FILEGROWTH = '+ @size +''
-	# 					+ N');';
-			
-	# 		PRINT @sql;
+				EXEC sp_executesql @sql;
+				SET @i = @i + 1;
+			END
+			GO
+			"
 
-	# 		EXEC sp_executesql @sql;
-	# 		SET @i = @i + 1;
-	# 	END
-	# 	GO
-
-	# 	DBCC SHRINKFILE ('$($mdfFile.FileName)', EMPTYFILE);
-	# 	GO
-
-	# 	DBCC SHRINKFILE ('$($mdfFile.FileName)', $initSize);
-	# 	GO
-
-	# 	DECLARE @dbName NVARCHAR(255) = N'$($db.NAME)';
-	# 	DECLARE @fileName NVARCHAR(255) = N'G:\Data\' + @dbName;
-	# 	DECLARE @fileCount INT = 8;
-	# 	DECLARE @i INT = 1;
-	# 	DECLARE @sql NVARCHAR(MAX);
-	# 	DECLARE @size NVARCHAR(10) = N'$($growthSize)MB';
-
-	# 	WHILE @i <= @fileCount
-	# 	BEGIN
-	# 		SET @sql = N'ALTER DATABASE [' + @dbName + N'] MODIFY FILE ('
-	# 					+ N'NAME = N''' + @dbName + CASE WHEN @i > 1 THEN CAST(@i AS NVARCHAR(10)) ELSE '' END + N''', '
-	# 					+ N'MAXSIZE = UNLIMITED, '
-	# 					+ N'FILEGROWTH = '+ @size +''
-	# 					+ N');';
-			
-	# 		PRINT @sql;
-
-	# 		EXEC sp_executesql @sql;
-	# 		SET @i = @i + 1;
-	# 	END
-	# 	GO
-	# 	"
-
-	# 	Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
-	# }
+			Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+		}
+	}
 }
 
 # ---------------------------------------------------------------------------------------------------------------- #
