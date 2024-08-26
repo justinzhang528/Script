@@ -20,7 +20,7 @@ if($chooseOption -eq 1){
     Read-Host "If server info is wrong, press [Ctrl+C] to stop the program and change server in script file.`nIf correct then press [Enter] to continue"
 }
 
-# Modify SQL Server Agent & SQL Server Logon Account to [PPANGGU\crontab101]
+#region: Modify SQL Server Agent & SQL Server Logon Account to [PPANGGU\crontab101]
 $NewLogonAccount = "PPANGGU\crontab101"
 $NewLogonPassword = "zl&!B3!HHaWw"
 
@@ -40,9 +40,9 @@ Start-Service -Name $AgentServiceName
 
 Write-Host "Log On account for SQL Server and SQL Server Agent has been successfully updated."
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-# Set Trace Flag:
+#region: Set Trace Flag
 $StartupParameter = '-T1118;-T1204;-T1222;-T3226;-T3605'
 $hklmRootNode = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server"
 $paramArray = $StartupParameter.Split(";")
@@ -78,9 +78,9 @@ $instances | %{
     start-service MSSQLSERVER
 }
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-# Modify (regedit) MsxEncryptChannelOptions value to 0
+#region: Modify (regedit) MsxEncryptChannelOptions value to 0
 $RegistryPath = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\MSSQL15.MSSQLSERVER\SQLServerAgent"
 $PropertyName = "MsxEncryptChannelOptions"
 $NewValue = 0
@@ -92,7 +92,7 @@ if (Test-Path $RegistryPath) {
     Write-Host "Registry key not found: $RegistryPath"
 }
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
 # Set Sql server memory settings:
 $query = "
@@ -145,9 +145,9 @@ Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $updateMemoryQuer
 
 Write-Host "Memory settings have been updated on the target server."
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-# Add SQLAgentReaderRole in msdb for Logins [PPANGGU\CMWL]
+#region: Add SQLAgentReaderRole in msdb for Logins [PPANGGU\CMWL]
 $loginName = "PPANGGU\CMWL"
 
 $sqlQuery = @"
@@ -163,9 +163,9 @@ Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery
 
 Write-Host "Login $loginName added to SQLAgentReaderRole in msdb."
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-# Move SystemDB files to Disk D & TempDB files to Disk I:
+#region: Move SystemDB files to Disk D & TempDB files to Disk I
 New-Item -Path "D:\SystemDB" -ItemType Directory -Force | Out-Null
 New-Item -Path "G:\Data" -ItemType Directory -Force | Out-Null
 New-Item -Path "H:\Log" -ItemType Directory -Force | Out-Null
@@ -235,15 +235,15 @@ Start-Service -Name $AgentServiceName
 Write-Host "SystemDB files moved to Disk D:."
 Write-Host "TempDB files moved to Disk I:."
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-# Copy \\10.26.8.76\d$\local-workspace\Scripts\DBA\SqlJobScripts\Backup to D:\Database\Script:
+#region: Copy \\10.26.8.76\d$\local-workspace\Scripts\DBA\SqlJobScripts\Backup to D:\Database\Script
 New-Item -Path "D:\Database\Script\" -ItemType Directory -Force | Out-Null
 Copy-Item -Path "\\10.26.8.76\d$\local-workspace\Scripts\DBA\SqlJobScripts\Backup\*" -Destination "D:\Database\Script\" -Force
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-# Create sp_WhoIsActivie in master db:
+#region: Create sp_WhoIsActivie in master db
 $sqlQuery = @"
 USE [master]
 GO
@@ -5526,9 +5526,9 @@ GO
 
 Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-# Create BKTable:
+#region: Create BKTable
 $sqlQuery = @"
 USE [master]
 GO
@@ -5866,10 +5866,10 @@ ALTER DATABASE [BKTablesDB] SET RECOVERY Simple WITH NO_WAIT
 
 Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
 if($chooseOption -eq 1){
-    # Restore DB:
+    #region: Restore DB
 	$sqlQuery = "
 	SELECT NAME
 	FROM sys.databases
@@ -5935,9 +5935,9 @@ if($chooseOption -eq 1){
 
 	Remove-Item -Path $tempFolder -Recurse
 
-	# ---------------------------------------------------------------------------------------------------------------- #
+	#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-	# Create Linked Server from old DB:
+	#region: Create Linked Server from old DB
 
 	$connectionString = "Server=$sourceServer;Database=master;User ID=CCWLCI;Password=y9VhQ8L6d0a83ivt7aqQgw==;TrustServerCertificate=True;"
 
@@ -6044,9 +6044,9 @@ if($chooseOption -eq 1){
 
 	Write-Host "Linked servers copied from $sourceServer to $targetServer."
 
-	# ---------------------------------------------------------------------------------------------------------------- #
+	#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-	# Create SQL Agent Job from old DB:
+	#region: Create SQL Agent Job from old DB
 	$connectionString = "Server=$sourceServer;Database=master;User ID=CCWLCI;Password=y9VhQ8L6d0a83ivt7aqQgw==;TrustServerCertificate=True;"
 
 	$sqlQuery = "
@@ -6228,9 +6228,9 @@ if($chooseOption -eq 1){
 
 	Write-Host "SQL Agent Jobs copied from $sourceServer to $targetServer."
 
-	# ---------------------------------------------------------------------------------------------------------------- #
+	#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-	# Create Security Login from script file
+	#region: Create Security Login from script file
 	$sqlQuery = "
 	SELECT @@SERVERNAME AS HostName
 	"
@@ -6260,9 +6260,9 @@ if($chooseOption -eq 1){
 
 	Remove-Item -Path "G:\login.sql"
 
-	# ---------------------------------------------------------------------------------------------------------------- #
+	#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-	# Move data file to G: and log file to H:
+	#region: Move data file to G: and log file to H
 	$dataFileLocationArray = @()
 	$logFileLocationArray = @()
 
@@ -6328,9 +6328,9 @@ if($chooseOption -eq 1){
 
 	Write-Host "Moved Data files to G: and Log files to H:."
 
-	# ---------------------------------------------------------------------------------------------------------------- #
+	#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-	# Split data file to 8 files (1 .mdf and 7 .ndf)
+	#region: Split data file to 8 files (1 .mdf and 7 .ndf)
 	$sqlQuery = "
 	SELECT NAME
 	FROM sys.databases
@@ -6507,9 +6507,9 @@ if($chooseOption -eq 1){
 	}
 }
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-# Change all Db owner to SA:
+#region: Change all Db owner to SA
 $sqlQuery = "
 EXEC sp_MSforeachdb 
  'IF ''?'' NOT IN(''master'', ''model'', ''msdb'', ''tempdb'')
@@ -6520,9 +6520,9 @@ EXEC sp_MSforeachdb
 "
 Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-# Create Backup Device for all dbs except system dbs
+#region: Create Backup Device for all dbs except system dbs
 $sqlQuery = @"
 declare @dbName varchar(50)
 declare @sql nvarchar(max)
@@ -6561,9 +6561,9 @@ New-Item -Path "D:\db_backup_diff" -ItemType Directory -Force | Out-Null
 New-Item -Path "D:\db_backup_full" -ItemType Directory -Force | Out-Null
 New-Item -Path "D:\db_backup_log" -ItemType Directory -Force | Out-Null
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
 
-# Crete opserverDBA user for all dbs and adjust role and permission
+#region: Crete opserverDBA user for all dbs and adjust role and permission
 $sqlQuery = @"
 DECLARE @command varchar(4000)
 SELECT @command = 'USE [?]
@@ -6632,4 +6632,4 @@ GO
 
 Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
 
-# ---------------------------------------------------------------------------------------------------------------- #
+#endregion ---------------------------------------------------------------------------------------------------------------- #
