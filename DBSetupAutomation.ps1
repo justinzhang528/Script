@@ -6509,6 +6509,45 @@ if($chooseOption -eq 1){
 
 #endregion ---------------------------------------------------------------------------------------------------------------- #
 
+#region: Fix User
+$sqlQuery = "
+declare @sql as nvarchar(4000), @temp as nvarchar(4000)
+	set @sql = ''
+	declare @spname as nvarchar(250), @spname2 as nvarchar(250)
+	DECLARE sp_cursor CURSOR FOR
+	select name from sys.databases where database_id > 4 --and state_desc = 'ONLINE'
+	OPEN sp_cursor;
+	FETCH NEXT FROM sp_cursor
+	INTO @spname;
+	WHILE @@FETCH_STATUS = 0
+	BEGIN
+	declare @sp_cursor2 as cursor
+	set @temp = 'set @cursor2=Cursor for select [name] from [' + @spname + '].sys.database_principals where type=''s'' and principal_id>4; open @cursor2'
+	exec sp_executesql @temp, N'@cursor2 cursor output', @sp_cursor2 output
+	FETCH NEXT FROM @sp_cursor2
+	INTO @spname2;
+	WHILE @@FETCH_STATUS = 0
+	BEGIN
+	--set @sql = @sql + 'exec '+@spname+'..sp_change_users_login ''auto_fix'',''' + @spname2 + ''';' + char(13)
+	set @sql = 'exec ['+@spname+']..sp_change_users_login ''auto_fix'',''' + @spname2 + ''';'
+	print @sql
+	EXECUTE sp_executesql @sql ;
+	print 'Go'
+	FETCH NEXT FROM @sp_cursor2
+	INTO @spname2;
+	End
+	CLOSE @sp_cursor2;
+	DEALLOCATE @sp_cursor2;
+	FETCH NEXT FROM sp_cursor
+	INTO @spname;
+	END
+	CLOSE sp_cursor;
+	DEALLOCATE sp_cursor;
+"
+Invoke-Sqlcmd -ConnectionString $targetConnectionString -Query $sqlQuery -Querytimeout ([int]::MaxValue)
+
+#endregion ---------------------------------------------------------------------------------------------------------------- #
+
 #region: Change all Db owner to SA
 $sqlQuery = "
 EXEC sp_MSforeachdb 
